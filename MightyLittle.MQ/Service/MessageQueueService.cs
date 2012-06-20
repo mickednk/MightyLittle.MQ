@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Messaging;
 using MightyLittle.MQ.Service.Consumers;
+using MightyLittle.MQ.Service.Providers;
 using log4net;
 using log4net.Config;
 
@@ -12,6 +13,7 @@ namespace MightyLittle.MQ.Service
 	{
 		private readonly List<IConsumer> _registeredConsumers;
 		private readonly ILog logger;
+		private ReceiveProviderBase _receiveProvider;
 
 		private MessageQueueService()
 		{
@@ -89,72 +91,54 @@ namespace MightyLittle.MQ.Service
 			        	Formatter = new XmlMessageFormatter()
 			        };
 
+			if (Queue.Transactional)
+			{
+				_receiveProvider = new TransactionalReceive();
+			}
+			else
+			{
+				_receiveProvider = new NonTransactionalReceive();
+			}
+
 			//setup events and start.
 			Queue.PeekCompleted += QueueOnPeekCompleted;
 			logger.DebugFormat("Queue '{0}' initiated.", Queue.QueueName);
-		}
-
-		private void ProcessMessageFromQueue(string messageId, MessageQueue asyncQueue)
-		{
-			using (var transaction = new MessageQueueTransaction())
-			{
-				transaction.Begin();
-				logger.DebugFormat("Transaction for {0} started.", messageId);
-
-				Message message;
-				try
-				{
-					message = asyncQueue.ReceiveById(messageId, TimeSpan.FromSeconds(30), transaction);
-					logger.DebugFormat("Message with id {0} received.", messageId);
-				}
-				catch (Exception ex)
-				{
-					transaction.Abort();
-					logger.Error(
-						string.Concat("Failed to receive message with id ", messageId, "transactions aborted.")
-						, ex);
-					return;
-				}
-
-				if (message != null)
-				{
-					IConsumer consumer = null;
-					try
-					{
-						consumer = _registeredConsumers.FirstOrDefault(c => c.MessageType == message.Body.GetType());
-					}
-					catch (InvalidOperationException ex)
-					{
-						logger.Error("Failed to ready message body", ex);
-					}
-					catch (Exception ex)
-					{
-						logger.Error("Failed to get consumer, might be related to message body", ex);
-					}
-
-					if (consumer != null)
-					{
-						try
-						{
-							consumer.ProcessMessage(message);
-						}
-						catch (Exception ex)
-						{
-							logger.Warn("Failed to process message", ex);
-						}
-					}
-				}
-
-				if (transaction.Status != MessageQueueTransactionStatus.Aborted)
-					transaction.Commit();
-			}
 		}
 
 		private void QueueOnPeekCompleted(object sender, PeekCompletedEventArgs peekCompletedEventArgs)
 		{
 			var asyncQueue = (MessageQueue) sender;
 			logger.DebugFormat("Peeked message with id {0}", peekCompletedEventArgs.Message.Id);
-			ProcessMessageFromQueue(peekCompletedEventArgs.Message.Id, asyncQueue);
+
+			_receiveProvider.GetMessageFromQueue(peekCompletedEventArgs.Message.Id, asyncQueue,
+			                                     delegate(Message message)
+			                                     {
+			                                     	IConsumer consumer = null;
+			                                     	try
+			                                     	{
+			                                     		consumer = _registeredConsumers.FirstOrDefault(c => c.MessageType == message.Body.GetType());
+			                                     	}
+			                                     	catch (InvalidOperationException ex)
+			                                     	{
+			                                     		logger.Error("Failed to ready message body", ex);
+			                                     	}
+			                                     	catch (Exception ex)
+			                                     	{
+			                                     		logger.Error("Failed to get consumer, might be related to message body", ex);
+			                                     	}
+
+			                                     	if (consumer != null)
+			                                     	{
+			                                     		try
+			                                     		{
+			                                     			consumer.ProcessMessage(message);
+			                                     		}
+			                                     		catch (Exception ex)
+			                                     		{
+			                                     			logger.Warn("Failed to process message", ex);
+			                                     		}
+			                                     	}
+			                                     });
 
 			logger.Debug("Peeking for next message.");
 			//peek next.
