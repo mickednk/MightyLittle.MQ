@@ -3,15 +3,20 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Messaging;
 using MightyLittle.MQ.Service.Consumers;
+using log4net;
+using log4net.Config;
 
 namespace MightyLittle.MQ.Service
 {
 	public class MessageQueueService : IDisposable
 	{
 		private readonly List<IConsumer> _registeredConsumers;
+		private readonly ILog logger;
 
 		private MessageQueueService()
 		{
+			logger = LogManager.GetLogger(typeof (MessageQueueService));
+			XmlConfigurator.Configure();
 			_registeredConsumers = new List<IConsumer>();
 		}
 
@@ -25,22 +30,50 @@ namespace MightyLittle.MQ.Service
 
 		public void Dispose()
 		{
-			if (Queue != null)
-				Queue.Dispose();
+			if (Queue == null) return;
+
+			//unsubscribe and dispose
+			Queue.PeekCompleted -= QueueOnPeekCompleted;
+			Queue.Dispose();
 		}
 
 		public void RegisterConsumer<TConsumer>() where TConsumer : IConsumer, new()
 		{
-			var consumer = new TConsumer();
-			_registeredConsumers.Add(consumer);
+			RegisterConsumer(typeof (TConsumer));
+		}
+
+		public void RegisterConsumer(Type consumerType)
+		{
+			if (consumerType == null)
+			{
+				throw new ArgumentNullException("consumerType");
+			}
+			if (consumerType.GetInterface(typeof (IConsumer).FullName) == null)
+			{
+				throw new ArgumentException("consumerType must implement IConsumer!");
+			}
+
+			//make instance.
+			var consumer = (IConsumer) Activator.CreateInstance(consumerType);
+
+			if (consumer == null)
+			{
+				throw new Exception(string.Format("Failed to create instance if type '{0}'", consumerType));
+			}
 
 			var formatter = (XmlMessageFormatter) Queue.Formatter;
+			if (formatter.TargetTypes.Contains(consumer.MessageType))
+				throw new Exception("Message type is already registered with another consumer.");
+
+			_registeredConsumers.Add(consumer);
 			formatter.TargetTypes = formatter.TargetTypes.Concat(new[] {consumer.MessageType}).Distinct().ToArray();
+			logger.DebugFormat("Consumer '{0}' registered to handel messages of type '{1}'", consumerType.FullName, consumer.MessageType);
 		}
 
 		public void Start()
 		{
 			Queue.BeginPeek();
+			logger.DebugFormat("Started listening on queue '{0}'", Queue.QueueName);
 		}
 
 		private void Initialize(string queueName)
@@ -58,6 +91,7 @@ namespace MightyLittle.MQ.Service
 
 			//setup events and start.
 			Queue.PeekCompleted += QueueOnPeekCompleted;
+			logger.DebugFormat("Queue '{0}' initiated.", Queue.QueueName);
 		}
 
 		private void ProcessMessageFromQueue(string messageId, MessageQueue asyncQueue)
@@ -65,15 +99,20 @@ namespace MightyLittle.MQ.Service
 			using (var transaction = new MessageQueueTransaction())
 			{
 				transaction.Begin();
+				logger.DebugFormat("Transaction for {0} started.", messageId);
 
 				Message message;
 				try
 				{
 					message = asyncQueue.ReceiveById(messageId, TimeSpan.FromSeconds(30), transaction);
+					logger.DebugFormat("Message with id {0} received.", messageId);
 				}
-				catch (Exception)
+				catch (Exception ex)
 				{
 					transaction.Abort();
+					logger.Error(
+						string.Concat("Failed to receive message with id ", messageId, "transactions aborted.")
+						, ex);
 					return;
 				}
 
@@ -86,11 +125,11 @@ namespace MightyLittle.MQ.Service
 					}
 					catch (InvalidOperationException ex)
 					{
-						Console.WriteLine(ex.Message);
+						logger.Error("Failed to ready message body", ex);
 					}
 					catch (Exception ex)
 					{
-						Console.WriteLine(ex.Message);
+						logger.Error("Failed to get consumer, might be related to message body", ex);
 					}
 
 					if (consumer != null)
@@ -101,7 +140,7 @@ namespace MightyLittle.MQ.Service
 						}
 						catch (Exception ex)
 						{
-							Console.WriteLine(ex.Message);
+							logger.Warn("Failed to process message", ex);
 						}
 					}
 				}
@@ -114,9 +153,10 @@ namespace MightyLittle.MQ.Service
 		private void QueueOnPeekCompleted(object sender, PeekCompletedEventArgs peekCompletedEventArgs)
 		{
 			var asyncQueue = (MessageQueue) sender;
-
+			logger.DebugFormat("Peeked message with id {0}", peekCompletedEventArgs.Message.Id);
 			ProcessMessageFromQueue(peekCompletedEventArgs.Message.Id, asyncQueue);
 
+			logger.Debug("Peeking for next message.");
 			//peek next.
 			asyncQueue.BeginPeek();
 		}
