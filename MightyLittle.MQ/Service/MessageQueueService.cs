@@ -60,7 +60,7 @@ namespace MightyLittle.MQ.Service
 
 			if (consumer == null)
 			{
-				throw new Exception(string.Format("Failed to create instance if type '{0}'", consumerType));
+				throw new Exception(string.Format("Failed to create instance of type '{0}'", consumerType));
 			}
 
 			var formatter = (XmlMessageFormatter) Queue.Formatter;
@@ -110,35 +110,37 @@ namespace MightyLittle.MQ.Service
 			var asyncQueue = (MessageQueue) sender;
 			logger.DebugFormat("Peeked message with id {0}", peekCompletedEventArgs.Message.Id);
 
-			_receiveProvider.GetMessageFromQueue(peekCompletedEventArgs.Message.Id, asyncQueue,
-			                                     delegate(Message message)
-			                                     {
-			                                     	IConsumer consumer = null;
-			                                     	try
-			                                     	{
-			                                     		consumer = _registeredConsumers.FirstOrDefault(c => c.MessageType == message.Body.GetType());
-			                                     	}
-			                                     	catch (InvalidOperationException ex)
-			                                     	{
-			                                     		logger.Error("Failed to ready message body", ex);
-			                                     	}
-			                                     	catch (Exception ex)
-			                                     	{
-			                                     		logger.Error("Failed to get consumer, might be related to message body", ex);
-			                                     	}
+			_receiveProvider.GetMessageFromQueue(
+				peekCompletedEventArgs.Message.Id,
+				asyncQueue,
+				delegate(Message message)
+				{
+					IConsumer consumer = null;
+					try
+					{
+						consumer = _registeredConsumers.FirstOrDefault(c => c.MessageType == message.Body.GetType());
+					}
+					catch (InvalidOperationException ex)
+					{
+						logger.Error("Failed to ready message body", ex);
+					}
+					catch (Exception ex)
+					{
+						logger.Error("Failed to get consumer, might be related to message body", ex);
+					}
 
-			                                     	if (consumer != null)
-			                                     	{
-			                                     		try
-			                                     		{
-			                                     			consumer.ProcessMessage(message);
-			                                     		}
-			                                     		catch (Exception ex)
-			                                     		{
-			                                     			logger.Warn("Failed to process message", ex);
-			                                     		}
-			                                     	}
-			                                     });
+					if (consumer != null)
+					{
+						try
+						{
+							consumer.ProcessMessage(message);
+						}
+						catch (Exception ex)
+						{
+							logger.Warn("Failed to process message", ex);
+						}
+					}
+				});
 
 			logger.Debug("Peeking for next message.");
 			//peek next.
