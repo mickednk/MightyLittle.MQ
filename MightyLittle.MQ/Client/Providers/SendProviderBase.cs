@@ -16,9 +16,9 @@ namespace MightyLittle.MQ.Client.Providers
 
 		protected SendProviderBase(MessageQueue queue) : this()
 		{
-			if (Queue == null)
+			if (queue == null)
 				throw new ArgumentNullException("queue");
-			if (Queue.CanWrite)
+			if (!queue.CanWrite)
 				throw new Exception("You don't have permission to send to queue.");
 
 			Queue = queue;
